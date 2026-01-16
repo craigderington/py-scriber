@@ -148,17 +148,278 @@ class SubtitleParser:
             return SubtitleParser.parse_srt(content, keep_labels)
 
 
+class AIProcessor:
+    """Process captions using Ollama for semantic understanding."""
+
+    def __init__(self, model='llama3', enabled=True):
+        self.model = model
+        self.enabled = enabled
+        self.ollama_available = self._check_ollama()
+
+    def _check_ollama(self):
+        """Check if Ollama is installed and running."""
+        if not self.enabled:
+            return False
+
+        try:
+            import ollama
+            # Test connection with a simple list call
+            ollama.list()
+            return True
+        except ImportError:
+            print("Warning: ollama library not installed. Install with: pip install ollama")
+            return False
+        except Exception as e:
+            print(f"Warning: Ollama not available ({str(e)}). Falling back to basic formatting.")
+            return False
+
+    def generate_summary(self, full_text: str) -> str:
+        """Generate executive summary using Ollama."""
+        if not self.ollama_available:
+            return ""
+
+        try:
+            import ollama
+
+            prompt = f"""You are a professional transcript summarizer. Generate a concise executive summary of the following video transcript.
+
+Your summary should:
+- Be 2-4 sentences maximum
+- Capture the main topic and key points
+- Be written in present tense
+- Focus on what the video covers, not who is speaking
+
+Transcript:
+{full_text[:3000]}
+
+Summary:"""
+
+            spinner = Spinner("Generating AI summary")
+            spinner.start()
+
+            response = ollama.generate(
+                model=self.model,
+                prompt=prompt,
+                options={
+                    'temperature': 0.3,
+                    'num_predict': 200,
+                }
+            )
+
+            spinner.stop()
+            summary = response['response'].strip()
+            return summary
+
+        except Exception as e:
+            print(f"Warning: Failed to generate summary ({str(e)})")
+            return ""
+
+    def detect_paragraph_breaks(self, captions: list) -> list:
+        """Use AI to detect semantic paragraph breaks."""
+        if not self.ollama_available or len(captions) < 5:
+            return self._basic_paragraph_breaks(captions)
+
+        try:
+            import ollama
+
+            # Join all captions into one text
+            full_text = ' '.join(captions)
+
+            # For very long texts, chunk them
+            if len(full_text) > 8000:
+                return self._chunked_paragraph_detection(captions)
+
+            prompt = f"""You are analyzing a video transcript. Insert paragraph breaks at semantically meaningful points (topic changes, major transitions).
+
+Rules:
+- Insert <BREAK> markers where natural paragraph breaks should occur
+- Keep existing text exactly as-is
+- Only add <BREAK> markers, don't modify content
+- Aim for paragraphs of 3-6 sentences
+- Break at topic transitions, not mid-thought
+
+Text:
+{full_text}
+
+Output the text with <BREAK> markers inserted:"""
+
+            spinner = Spinner("Detecting paragraph breaks with AI")
+            spinner.start()
+
+            response = ollama.generate(
+                model=self.model,
+                prompt=prompt,
+                options={
+                    'temperature': 0.2,
+                    'num_predict': len(full_text) + 500,
+                }
+            )
+
+            spinner.stop()
+
+            # Parse the response to extract paragraphs
+            processed_text = response['response'].strip()
+            paragraphs = [p.strip() for p in processed_text.split('<BREAK>') if p.strip()]
+
+            # Validate output (fallback if AI output is malformed)
+            if len(paragraphs) < 2 or sum(len(p) for p in paragraphs) < len(full_text) * 0.7:
+                print("Warning: AI paragraph detection produced unexpected output, using fallback")
+                return self._basic_paragraph_breaks(captions)
+
+            return paragraphs
+
+        except Exception as e:
+            print(f"Warning: AI paragraph detection failed ({str(e)}), using fallback")
+            return self._basic_paragraph_breaks(captions)
+
+    def _chunked_paragraph_detection(self, captions: list) -> list:
+        """Process very long transcripts in chunks."""
+        chunk_size = 100
+        chunks = [captions[i:i + chunk_size] for i in range(0, len(captions), chunk_size)]
+
+        all_paragraphs = []
+        for i, chunk in enumerate(chunks):
+            print(f"Processing chunk {i+1}/{len(chunks)}...")
+            chunk_paragraphs = self.detect_paragraph_breaks(chunk)
+            all_paragraphs.extend(chunk_paragraphs)
+
+        return all_paragraphs
+
+    def _basic_paragraph_breaks(self, captions: list) -> list:
+        """Fallback to basic heuristic paragraph detection."""
+        paragraphs = []
+        current_paragraph = []
+
+        for i, caption in enumerate(captions):
+            current_paragraph.append(caption)
+
+            ends_with_sentence = caption and caption[-1] in '.!?'
+            is_last = i == len(captions) - 1
+            next_starts_with_capital = False
+            if not is_last and captions[i + 1]:
+                next_starts_with_capital = captions[i + 1][0].isupper()
+
+            if (ends_with_sentence and next_starts_with_capital) or is_last:
+                paragraph_text = ' '.join(current_paragraph)
+                paragraph_text = re.sub(r'\s+', ' ', paragraph_text).strip()
+                if paragraph_text:
+                    paragraphs.append(paragraph_text)
+                current_paragraph = []
+
+        return paragraphs
+
+    def _remove_duplicates(self, captions: list) -> list:
+        """Remove duplicate consecutive captions."""
+        cleaned = []
+        prev_caption = None
+
+        for caption in captions:
+            if not caption.strip():
+                continue
+
+            normalized = re.sub(r'[^\w\s]', '', caption.lower())
+            prev_normalized = re.sub(r'[^\w\s]', '', prev_caption.lower()) if prev_caption else None
+
+            if prev_normalized and normalized == prev_normalized:
+                continue
+
+            cleaned.append(caption.strip())
+            prev_caption = caption
+
+        return cleaned
+
+    def process(self, captions: list, video_title: str = None) -> dict:
+        """
+        Process captions with AI to generate summary and detect paragraphs.
+
+        Returns:
+            dict with keys:
+                - 'paragraphs': list of paragraph strings
+                - 'summary': executive summary string (empty if disabled)
+                - 'title': video title
+        """
+        # First, clean captions (remove duplicates)
+        cleaned_captions = self._remove_duplicates(captions)
+
+        # Generate paragraphs (with or without AI)
+        if self.ollama_available:
+            paragraphs = self.detect_paragraph_breaks(cleaned_captions)
+        else:
+            paragraphs = self._basic_paragraph_breaks(cleaned_captions)
+
+        # Generate summary if enabled
+        summary = ""
+        if self.ollama_available:
+            full_text = ' '.join(paragraphs)
+            summary = self.generate_summary(full_text)
+
+        return {
+            'paragraphs': paragraphs,
+            'summary': summary,
+            'title': video_title
+        }
+
+
 class MarkdownFormatter:
-    """Format captions as clean Markdown."""
+    """Format captions as clean Markdown with optional AI enhancements."""
 
     @staticmethod
-    def format(captions: list, title: str = None) -> str:
+    def format(captions: list, title: str = None, ai_data: dict = None) -> str:
         """
-        Convert captions list to formatted Markdown.
-        Merges captions into paragraphs and removes duplicates.
+        Convert captions or AI-processed data to formatted Markdown.
+
+        Args:
+            captions: Raw caption list (used if ai_data is None)
+            title: Video title
+            ai_data: Dict with 'paragraphs' and 'summary' from AIProcessor
+
+        Returns:
+            Formatted Markdown string
         """
-        if not captions:
+        if ai_data:
+            # Use AI-processed data
+            paragraphs = ai_data.get('paragraphs', [])
+            summary = ai_data.get('summary', '')
+            title = ai_data.get('title', title)
+        else:
+            # Fallback to basic processing
+            paragraphs = MarkdownFormatter._basic_format(captions)
+            summary = ''
+
+        if not paragraphs:
             return ""
+
+        # Build final Markdown
+        markdown_lines = []
+
+        # Add title if provided
+        if title:
+            markdown_lines.append(f"# {title}")
+            markdown_lines.append("")
+
+        # Add executive summary if available
+        if summary:
+            markdown_lines.append("## Executive Summary")
+            markdown_lines.append("")
+            markdown_lines.append(summary)
+            markdown_lines.append("")
+            markdown_lines.append("---")
+            markdown_lines.append("")
+            markdown_lines.append("## Full Transcript")
+            markdown_lines.append("")
+
+        # Add paragraphs
+        for paragraph in paragraphs:
+            markdown_lines.append(paragraph)
+            markdown_lines.append("")
+
+        return '\n'.join(markdown_lines).strip()
+
+    @staticmethod
+    def _basic_format(captions: list) -> list:
+        """Basic paragraph formatting (original logic)."""
+        if not captions:
+            return []
 
         # Remove empty captions and clean up
         captions = [cap.strip() for cap in captions if cap.strip()]
@@ -206,28 +467,17 @@ class MarkdownFormatter:
                     paragraphs.append(paragraph_text)
                 current_paragraph = []
 
-        # Build final Markdown
-        markdown_lines = []
-
-        # Add title if provided
-        if title:
-            markdown_lines.append(f"# {title}")
-            markdown_lines.append("")
-
-        # Add paragraphs
-        for paragraph in paragraphs:
-            markdown_lines.append(paragraph)
-            markdown_lines.append("")
-
-        return '\n'.join(markdown_lines).strip()
+        return paragraphs
 
 
 class YouTubeTranscriber:
     """Main transcriber class."""
 
-    def __init__(self, language='en', keep_labels=False):
+    def __init__(self, language='en', keep_labels=False, use_ai=False, ai_model='llama3'):
         self.language = language
         self.keep_labels = keep_labels
+        self.use_ai = use_ai
+        self.ai_processor = AIProcessor(model=ai_model, enabled=use_ai)
 
     def download_captions(self, url: str, output_dir: str = None) -> tuple:
         """
@@ -307,9 +557,14 @@ class YouTubeTranscriber:
             print("Parsing captions...")
             captions = SubtitleParser.parse(subtitle_content, self.keep_labels)
 
-            # Format as Markdown
-            print("Formatting as Markdown...")
-            markdown = MarkdownFormatter.format(captions, video_title)
+            # Process with AI if enabled
+            if self.use_ai:
+                ai_data = self.ai_processor.process(captions, video_title)
+                markdown = MarkdownFormatter.format(None, video_title, ai_data=ai_data)
+            else:
+                # Basic formatting
+                print("Formatting as Markdown...")
+                markdown = MarkdownFormatter.format(captions, video_title, ai_data=None)
 
             # Save to file or return
             if output_file:
@@ -409,6 +664,19 @@ Examples:
         action='store_true'
     )
 
+    parser.add_argument(
+        '--ai',
+        help='Enable AI-powered summarization and paragraph formatting (requires Ollama)',
+        action='store_true'
+    )
+
+    parser.add_argument(
+        '--ai-model',
+        help='Ollama model to use for AI processing (default: llama3)',
+        default='llama3',
+        choices=['llama3', 'llama3.1', 'llama3.2', 'mistral', 'mixtral', 'gemma', 'phi3']
+    )
+
     args = parser.parse_args()
 
     # Validate URL
@@ -422,7 +690,9 @@ Examples:
 
         transcriber = YouTubeTranscriber(
             language=args.language,
-            keep_labels=args.keep_labels
+            keep_labels=args.keep_labels,
+            use_ai=args.ai,
+            ai_model=args.ai_model
         )
 
         transcriber.transcribe(youtube_url, args.output)

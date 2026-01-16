@@ -14,6 +14,7 @@ A Python CLI tool that extracts existing captions from YouTube videos and conver
 - Automatically removes duplicate captions
 - Formats video title as H1 header
 - Multi-language support (English, Spanish, French, German, Japanese, etc.)
+- **AI-Powered Formatting** (Optional) - Use Ollama for smart paragraph detection and executive summaries
 
 ## Requirements
 
@@ -75,6 +76,58 @@ pip install -r requirements.txt
 python transcriber.py VIDEO_ID
 ```
 
+## Optional: AI Enhancement with Ollama
+
+For AI-powered summarization and semantic paragraph detection:
+
+### 1. Install Ollama
+
+```bash
+curl -fsSL https://ollama.ai/install.sh | sh
+```
+
+### 2. Pull a Model
+
+```bash
+ollama pull llama3
+```
+
+### 3. Use the `--ai` Flag
+
+```bash
+transcribe VIDEO_ID --ai
+```
+
+### Recommended Models
+
+- **llama3** (default) - Best balance of speed and quality (4.7GB)
+- **mistral** - Fast alternative (4.1GB)
+- **llama3.1** - More accurate summaries (4.7GB)
+- **llama3.2** - Lightweight option for lower-spec systems (2GB)
+
+### AI Features
+
+When you use the `--ai` flag:
+- **Executive Summary**: Adds a 2-4 sentence summary at the top of the transcript
+- **Better Paragraph Breaks**: Uses semantic understanding to detect topic changes, not just punctuation
+- **Graceful Fallback**: If Ollama isn't available, automatically falls back to basic formatting
+
+### Example Output with AI
+
+```markdown
+# Video Title
+
+## Executive Summary
+
+This video covers the fundamentals of Python programming, including variables, functions, and data structures. The instructor demonstrates practical examples and explains best practices for writing clean, maintainable code.
+
+---
+
+## Full Transcript
+
+[Semantically-organized paragraphs with better topic detection...]
+```
+
 ## Usage
 
 If you installed with `uv tool install`, use the `transcribe` command. Otherwise, use `uv run python transcriber.py` or `python transcriber.py`.
@@ -131,6 +184,20 @@ By default, labels like `[Music]`, `[Applause]`, `(laughter)` are removed. To ke
 transcribe VIDEO_ID --keep-labels
 ```
 
+### AI-Enhanced Transcripts
+
+Generate a transcript with AI-powered summary and better paragraph detection:
+```bash
+# With default model (llama3)
+transcribe VIDEO_ID --ai
+
+# With custom model
+transcribe VIDEO_ID --ai --ai-model mistral
+
+# Combined with other options
+transcribe VIDEO_ID --ai --language es -o spanish-summary.md
+```
+
 ### Get Help
 
 ```bash
@@ -140,7 +207,7 @@ transcribe --help
 ## Command-Line Options
 
 ```
-usage: transcriber.py [-h] [-o OUTPUT] [-l LANGUAGE] [--keep-labels] url
+usage: transcriber.py [-h] [-o OUTPUT] [-l LANGUAGE] [--keep-labels] [--ai] [--ai-model MODEL] url
 
 positional arguments:
   url                   YouTube video URL or video ID
@@ -152,6 +219,9 @@ options:
   -l LANGUAGE, --language LANGUAGE
                         Caption language code (default: en)
   --keep-labels         Keep speaker labels like [Music] or [Applause]
+  --ai                  Enable AI-powered features (requires Ollama)
+  --ai-model MODEL      Ollama model to use (default: llama3)
+                        Choices: llama3, llama3.1, llama3.2, mistral, mixtral, gemma, phi3
 ```
 
 ## What You'll See
@@ -254,13 +324,15 @@ If captions aren't available in your requested language:
 
 - Only works with videos that have captions (manual or auto-generated)
 - Cannot transcribe videos without existing captions
-- Paragraph detection is heuristic-based (not AI-powered)
+- Basic paragraph detection is heuristic-based (use `--ai` for semantic detection)
 - Very long videos may take a moment to process
+- AI features require Ollama to be installed and running locally
 
 ## Future Enhancements
 
 Potential improvements:
-- AI-powered formatting with headers and bullet points
+- ~~AI-powered formatting with headers and bullet points~~ ✅ Implemented with `--ai` flag
+- Section headers and bullet point detection (AI enhancement)
 - Batch processing multiple videos
 - Export to additional formats (PDF, DOCX)
 - Timestamp preservation mode
@@ -277,3 +349,4 @@ Contributions are welcome! Feel free to submit issues or pull requests.
 ## Acknowledgments
 
 - Built with [yt-dlp](https://github.com/yt-dlp/yt-dlp) - the excellent YouTube downloader
+- AI features powered by [Ollama](https://ollama.ai) - local LLM runtime
